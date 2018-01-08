@@ -1,4 +1,5 @@
 // essai de modif
+// librairie d'affichage
 #ifndef USE_DISPLAY
   #define USE_DISPLAY
   #define DISPLAY_Adafruit
