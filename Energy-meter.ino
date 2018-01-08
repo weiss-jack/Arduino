@@ -18,12 +18,12 @@
 #define TIMER_SECOND  1*1000000/TIMER_PERIOD // for a tick per second 
 
 #if defined(ESP_PLATFORM)
-  #define ADC_Voltage_PIN 32
+  #define ADC_Voltage_PIN 34
   #define ADC_Current_PIN 33
   #define ADC_Resolution 4096 // 12-bit ADC
   #define ADC_Range 3.2 // 0 - 3.2V range (11 dB attenuation)
 #elif defined(ARDUINO)
-  #define ADC_Voltage_PIN 3
+  #define ADC_Voltage_PIN 5
   #define ADC_Current_PIN 4
   #define ADC_Resolution 1024 // 10-bit ADC
   #define ADC_Range 5 // 0 - 5V range
