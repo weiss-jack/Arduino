@@ -1,0 +1,284 @@
+/*
+  Energy on SD card datalogger
+
+ The circuit:
+ * Voltage on analog input A0 through a resistor ladder 
+ * Current on analog input A1 through ACS712 current sensor
+ * Display on 128*32 OLED graphic Display SSD1306 via I2C
+ * Debug output via serial link
+ * SD card attached to SPI bus as follows:
+ ** MOSI - pin 11
+ ** MISO - pin 12
+ ** CLK - pin 13
+ ** CS D pin 4 (for MKRZero SD: SDCARD_SS_PIN)
+
+ created  18 dec 2017
+ by J. WEISS
+
+
+ */
+//#include <driver/adc.h>
+ 
+//#define USE_DISPLAY
+#define USE_DISPLAY_8x8
+//#define USE_SD
+
+#ifdef USE_SD
+ #include <SdFat.h>
+ const uint8_t chipSelect = 4;
+ #define FILE_BASE_NAME "Data"
+ SdFat sd;
+
+ // Log file.
+ SdFile file;
+
+#endif
+
+#ifdef USE_DISPLAY
+ #include <SSD1306_OLED_TXT.h>
+ SSD1306_OLED_TXT display(32);
+// #include <Adafruit_SSD1306.h>
+// Adafruit_SSD1306 display(3);
+ 
+ #if (SSD1306_LCDHEIGHT != 32)
+  #error(F("Height incorrect, please fix Adafruit_SSD1306.h!"));
+ #endif
+#endif
+
+#ifdef USE_DISPLAY_8x8
+ #include <U8x8lib.h>
+ U8X8_SSD1306_128X32_UNIVISION_HW_I2C u8x8(/* reset=*/ U8X8_PIN_NONE, /* clock=*/ SCL, /* data=*/ SDA);   // pin remapping with ESP8266 HW I2C
+#endif
+
+
+
+//const float ADC_Gain = 5.0 / 1024.0;// (VoltageReference / (2^^10)) 0 - 5V range with 10 bits
+const float ADC_Gain = 5.0 / 4096.0;// (VoltageReference / (2^^12)) 0 - 5V range with 12 bits
+//const float VoltageDivisor = 1./(10.+1.); //R2 / (R1 + R2)
+const float VoltageDivisor = 1.; //R2 / (R1 + R2)
+const float Current_Gain = 1000. / 66.0; // 66 mV/A
+
+float Voltage;
+float Current;
+float Watts;
+float TotalAmperes;
+float AmpereHour;
+float Energy;
+
+float smoothedCurrent;
+const float filterCoef=0.1; // smoothing of sensor values
+
+
+
+unsigned long currentMillis;
+unsigned long currentSeconds;
+uint32_t logTime; // Time in micros for next data record.
+
+unsigned long previousMillis = 0; // will store last time LED was updated
+// the follow variables is a long because the time, measured in miliseconds,
+// will quickly become a bigger number than can be stored in an int.
+long intervalle = 1000; // Acquisition interval (milliseconds)
+
+
+#ifdef USE_SD
+
+//==============================================================================
+// User functions.  Edit writeHeader() and logData() for your requirements.
+
+//------------------------------------------------------------------------------
+// Write data header.
+void writeHeader() {
+  file.print(F("Seconds, Current, Voltage, Power, Energy"));
+  file.println();
+}
+//------------------------------------------------------------------------------
+// Log a data record.
+void logData() {
+  // Write data to file.  Start with log time in micros.
+  //file.print(dataString);
+  file.print(currentSeconds);
+  file.write(';');
+  file.print(Current);
+  file.write(';');
+  file.print(Voltage);
+  file.write(';');
+  file.print(Watts);
+  file.write(';');
+  file.print(Energy);
+  file.write(';');
+  
+  file.println();
+}
+//==============================================================================
+// Error messages stored in flash.
+#define error(msg) sd.errorHalt(F(msg))
+//------------------------------------------------------------------------------
+#endif
+
+
+volatile int interruptCounter;
+int totalInterruptCounter;
+ 
+hw_timer_t * timer = NULL;
+portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
+ 
+void onTimer() {
+  portENTER_CRITICAL_ISR(&timerMux);
+  interruptCounter++;
+  portEXIT_CRITICAL_ISR(&timerMux);
+ 
+}
+
+void setup()   {
+  Serial.begin(115200);
+  // Clock freq. = 80 MHz ; Divider = 40000 ==> tick at 2 kHz
+  timer = timerBegin(0, 40000, true); // timer_id = 0; divider=8000; countUp = true;
+  timerAttachInterrupt(timer, &onTimer, true); // edge = true
+  timerAlarmWrite(timer, 2000, true); //1000 ms
+  timerAlarmEnable(timer);
+
+  
+  #ifdef USE_SD
+  const uint8_t BASE_NAME_SIZE = sizeof(FILE_BASE_NAME) - 1;
+  char fileName[13] = FILE_BASE_NAME "00.csv";
+
+    // Initialize at the highest speed supported by the board that is
+    // not over 50 MHz. Try a lower speed if SPI errors occur.
+    if (!sd.begin(chipSelect, SD_SCK_MHZ(50))) sd.initErrorHalt();
+
+    // Find an unused file name.
+   if (BASE_NAME_SIZE > 6) error("FILE_BASE_NAME too long");
+  
+   while (sd.exists(fileName)) {
+     if (fileName[BASE_NAME_SIZE + 1] != '9') {
+       fileName[BASE_NAME_SIZE + 1]++;
+     } else if (fileName[BASE_NAME_SIZE] != '9') {
+       fileName[BASE_NAME_SIZE + 1] = '0';
+       fileName[BASE_NAME_SIZE]++;
+     } else  error("Can't create file name");
+    
+   }
+   if (!file.open(fileName, O_CREAT | O_WRITE | O_EXCL))  error("file.open");
+  
+   // Write data header.
+   writeHeader(); // Write data header.
+  
+  #endif
+  #ifdef USE_DISPLAY
+   // SSD1306 initialization : by default, we'll generate the high voltage from the 3.3v line internally! (neat!)
+   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);  // initialize with the I2C addr 0x3C (for the 128x32)
+   // init done
+  
+   // Show image buffer on the display hardware.
+   // Since the buffer is intialized with an Adafruit splashscreen internally, this will display the splashscreen.
+   display.display();
+   display.setTextSize(1);
+   display.setTextColor(WHITE); 
+   delay(500);
+  #endif
+  
+  #ifdef USE_DISPLAY_8x8
+   u8x8.begin();
+   u8x8.setPowerSave(0);
+   //u8x8.setFont(u8x8_font_chroma48medium8_r);
+   u8x8.setFont(u8x8_font_pcsenior_f);
+   
+
+   u8x8.setCursor(0,0);
+   delay(500);
+  #endif
+  //analogSetPinAttenuation(A4, ADC_11db);
+}
+
+
+void loop() {
+  currentMillis = millis();
+  if(currentMillis - previousMillis > intervalle) {
+    previousMillis = currentMillis;
+    Voltage = analogRead(32)*ADC_Gain*VoltageDivisor;
+    Serial.print("CAN : ");Serial.println(analogRead(32));
+    Current =(analogRead(32)*ADC_Gain - 2.5)*Current_Gain; // offset voltage is 2.5v
+
+    currentSeconds=currentMillis/1000; // convert milliseconds to seconds
+
+    TotalAmperes=TotalAmperes+Current; // calculate total Amperes since origin
+    Watts =Voltage*Current; // power=voltage*current
+    AmpereHour = (TotalAmperes/currentSeconds)/3600;
+    Energy=(Watts*currentSeconds)/3600.; //Watt-sec is again convert to Watt-Hr by dividing 1hr(3600sec)
+    // energy=(watt*time)/(1000*3600); for reading in kWh
+
+    #ifdef DEBUG
+      Serial.print(F("Temps : ")); Serial.print(currentSeconds); Serial.print(F(" s     "));
+      Serial.print(F("Voltage : ")); Serial.print(Voltage); Serial.print(F(" V     ")); Serial.print(F("CURRENT :")); Serial.print(Current); Serial.println(F(" A"));
+      Serial.print(F("POWER :"));Serial.print(Watts);Serial.print(F(" Watt    "));Serial.print(F("Energy :"));Serial.print(Energy);Serial.println(F(" Watt-Hour"));
+    #endif
+    #ifdef USE_DISPLAY
+      display.clearDisplay();
+      display.setCursor(0,0);
+      display.print(Voltage,1);display.print(F(" V "));display.print(Watts,1);display.print(F(" W   \n")); 
+      display.setCursor(80-2*6*String(Current).length(),8+1);
+      display.setTextSize(2);
+      display.print(Current);
+      display.setCursor(display.getCursorX(),16+1);
+      display.setTextSize(1);display.println(F(" A "));
+      display.setCursor(0,8+16+1);
+      display.print(AmpereHour*1000,0); display.println(F(" mAh "));
+      display.print(Energy); display.println(F(" Wh "));
+      display.display();
+    #endif
+
+    #ifdef USE_DISPLAY_8x8
+      u8x8.setCursor(0,0);
+      u8x8.print(F("Energy Meter"));
+      char toto [5]; 
+      int n;
+      int Amp = int(Current);
+      int Centis = int (abs(100*(Current-Amp)));
+      n=sprintf (toto, "%3d.%02d", Amp,Centis);
+      
+      //Serial.print("Toto :"); Serial.println(toto);
+      u8x8.draw2x2String(0, 1, toto); 
+      u8x8.setCursor(13,2);
+      u8x8.print(F("A"));
+      u8x8.setCursor(0,3);
+      u8x8.print(Voltage,1);u8x8.print(F(" V "));u8x8.print(Watts,1);u8x8.print(F(" W   \n"));
+  
+  /*
+  delay(5000);
+  //u8x8.setPowerSave(1);
+  u8x8.setContrast(1);
+  delay(5000);
+  //u8x8.setPowerSave(0);
+  u8x8.setContrast(255);
+  //delay(1000);
+  */
+    #endif
+
+   #ifdef USE_SD
+      logData();
+
+      // Force data to SD and update the directory entry to avoid data loss.
+      if (!file.sync() || file.getWriteError()) error("write error");
+   #endif;
+  }
+  
+  if (interruptCounter > 0) {
+ 
+    portENTER_CRITICAL(&timerMux);
+    interruptCounter--;
+    portEXIT_CRITICAL(&timerMux);
+ 
+    totalInterruptCounter++;
+
+
+    smoothedCurrent = (Current * (1. - filterCoef)) + (smoothedCurrent  *  filterCoef);
+
+  
+    Serial.print("An interrupt as occurred. Total number: ");
+    Serial.print(totalInterruptCounter);
+    Serial.print(" Smoothed : ");
+    Serial.print(smoothedCurrent);
+ 
+  }
+}
+

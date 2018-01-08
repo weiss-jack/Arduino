@@ -1,0 +1,159 @@
+/*
+  Energy on SD card datalogger
+
+ The circuit:
+ * Voltage on analog input A0 through a resistor ladder 
+ * Current on analog input A1 through ACS712 current sensor
+ * Display on 128*32 OLED graphic Display SSD1306 via I2C
+ * Debug output via serial link
+ * SD card attached to SPI bus as follows:
+ ** MOSI - pin 11
+ ** MISO - pin 12
+ ** CLK - pin 13
+ ** CS - pin 4 (for MKRZero SD: SDCARD_SS_PIN)
+
+ created  18 dec 2017
+ by J. WEISS
+
+
+ */
+#include <SPI.h>
+#include <SD.h>
+#include <SSD1306_OLED_TXT.h>
+SSD1306_OLED_TXT display(32);
+
+
+const int chipSelect = 4;
+
+const long VoltageReference = 5.0;
+const long R1 = 10000;
+const long R2 = 1000;
+const long VoltageDivisor = (VoltageReference / 1023.0)*(R2 / (R1 + R2));
+float Voltage;
+float Current;
+float Watts;
+float TotalAmperes;
+float AmpereHour;
+float WattHour;
+bool SD_Card_OK =false;
+
+
+
+#if (SSD1306_LCDHEIGHT != 32)
+#error(F("Height incorrect, please fix Adafruit_SSD1306.h!"));
+#endif
+
+void setup()   {                
+  Serial.begin(115200);
+/*
+  while (!Serial) {
+    ; // wait for serial port to connect. Needed for native USB port only
+  }
+*/
+
+  Serial.print(F("Initializing SD card..."));
+
+  // see if the card is present and can be initialized:
+  if (!SD.begin(chipSelect)) {
+    Serial.println(F("Card failed, or not present"));
+  }
+  else {
+    Serial.println(F("card initialized."));
+    SD_Card_OK = true;
+  }
+  
+
+  // SSD1306 initialization : by default, we'll generate the high voltage from the 3.3v line internally! (neat!)
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);  // initialize with the I2C addr 0x3C (for the 128x32)
+  // init done
+  
+  // Show image buffer on the display hardware.
+  // Since the buffer is intialized with an Adafruit splashscreen
+  // internally, this will display the splashscreen.
+  display.display();
+  display.setTextSize(1);
+  display.setTextColor(WHITE); 
+  delay(500);
+    
+}
+
+void ReadVoltage(){
+
+  Voltage = analogRead(0) * VoltageDivisor;
+ }
+
+ void ReadCurrent(){
+
+  Current =10*((5.0*analogRead(1))/1024.0 - 2.5); // offset voltage is 2.5v
+  
+
+}
+
+
+
+
+void loop() {
+ 
+  ReadVoltage();
+  ReadCurrent();
+
+long milisec = millis(); // calculate time in milliseconds
+long time=milisec/1000; // convert milliseconds to seconds
+
+
+TotalAmperes=TotalAmperes+Current; // calculate total Amperes since origin
+Watts =Voltage*Current; // power=voltage*current
+AmpereHour = (TotalAmperes/time)/3600;
+WattHour=(Watts*time)/3600; //Watt-sec is again convert to Watt-Hr by dividing 1hr(3600sec)
+// energy=(watt*time)/(1000*3600); for reading in kWh
+
+
+Serial.print(F("VOLTAGE : ")); Serial.print(Voltage); Serial.print(F(" V     ")); Serial.print(F("CURRENT :")); Serial.print(Current); Serial.println(F(" A"));
+Serial.print(F("POWER :"));Serial.print(Watts);Serial.print(F(" Watt    "));Serial.print(F("Energy :"));Serial.print(WattHour);Serial.println(F(" Watt-Hour"));
+Serial.println(""); // print the next sets of parameter after a blank line
+delay(500);
+
+display.clearDisplay();
+display.setCursor(0,0);
+display.println(F("Energy meter by JW"));
+display.print(Voltage);display.print(F(" V   ")); display.print(Current);display.println(F(" A "));
+display.print(Watts);display.print(F(" W   ")); display.print(WattHour); display.println(F(" Wh "));
+display.println(F("Tout va bien"));
+display.println(F("pour l'instant"));
+display.display();
+
+
+if (SD_Card_OK){
+  ////////////////////////////////////////////////////////
+  // make a string for assembling the data to log:
+String dataString = "";
+int parameter[4]={Voltage,Current,Watts,WattHour}; // here parameters are power,energy,watt-hour and current
+  // read 4 parameters and append to the string:
+  for (int i = 0; i < 4; i++) 
+  {
+    int sensor = parameter[i];
+    dataString += String(sensor);
+    if (i < 4) 
+    {
+      dataString += ","; 
+    }
+  }
+
+
+  File dataFile = SD.open("Energy.txt", FILE_WRITE);
+
+  // if the file is available, write to it:
+  if (dataFile) {
+    Serial.println(dataString);
+    dataFile.println(dataString);
+    dataFile.close();
+    // print to the serial port too:
+    Serial.println(dataString);
+  }
+  // if the file isn't open, pop up an error:
+  else {
+    Serial.println(F("error opening datalog.txt"));
+  }
+  } 
+  
+}
